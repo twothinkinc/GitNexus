@@ -22,6 +22,10 @@ export {
   getLanguageFromFilename,
   getSyntaxLanguageFromFilename,
   isBladeTemplateFilename,
+  isCudaFilename,
+  grammarVariantKey,
+  GRAMMAR_VARIANT_TSX,
+  GRAMMAR_VARIANT_CUDA,
 } from './language-detection.js';
 export type { MroStrategy } from './mro-strategy.js';
 

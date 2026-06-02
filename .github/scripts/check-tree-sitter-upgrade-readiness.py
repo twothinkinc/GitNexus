@@ -62,6 +62,7 @@ GRAMMARS: dict[str, tuple[str, str, str]] = {
     "tree-sitter-c":          ("tree-sitter/tree-sitter-c",          "master", "src/parser.c"),
     "tree-sitter-c-sharp":    ("tree-sitter/tree-sitter-c-sharp",    "master", "src/parser.c"),
     "tree-sitter-cpp":        ("tree-sitter/tree-sitter-cpp",        "master", "src/parser.c"),
+    "tree-sitter-cuda":       ("tree-sitter-grammars/tree-sitter-cuda", "master", "src/parser.c"),
     "tree-sitter-dart":       ("UserNobody14/tree-sitter-dart",      "master", "src/parser.c"),
     "tree-sitter-go":         ("tree-sitter/tree-sitter-go",         "master", "src/parser.c"),
     "tree-sitter-java":       ("tree-sitter/tree-sitter-java",       "master", "src/parser.c"),
@@ -91,6 +92,15 @@ INTENTIONAL_PINS: dict[str, str] = {
         "#1242 — last 0.23.x release before tree-sitter-cpp added a runtime "
         "dep on the broken-ABI tree-sitter-c@^0.23.1; pinning here removes "
         "the need for a transitive override"
+    ),
+    "tree-sitter-cuda": (
+        "CUDA (.cu/.cuh) support — pinned to the 0.20.x line (peer "
+        "tree-sitter ^0.21.0, no transitive tree-sitter-c/cpp). "
+        "tree-sitter-cuda@0.21.x peers tree-sitter ^0.22.4 and pulls "
+        "tree-sitter-c@0.24.1 + tree-sitter-cpp@0.23.4, both ABI-incompatible "
+        "with the bundled tree-sitter@0.21.1 (re-introduces #1242). Exact pin "
+        "(not ^) so npm install / lockfile refresh can't float it forward. "
+        "optionalDependency: when absent, .cu/.cuh fall back to tree-sitter-cpp."
     ),
 }
 

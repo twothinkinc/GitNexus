@@ -1,5 +1,26 @@
 import Parser from 'tree-sitter';
 import CPP from 'tree-sitter-cpp';
+import { createRequire } from 'node:module';
+import { isCudaFilename } from 'gitnexus-shared';
+
+// tree-sitter-cuda is an optionalDependency. The scope-resolution path runs
+// these queries against the tree produced by the parse phase, which uses the
+// CUDA grammar for `.cu`/`.cuh` files when it is installed (and falls back to
+// tree-sitter-cpp otherwise). The parser AND the compiled query here must use
+// the SAME grammar as that tree — a query compiled against a different grammar
+// instance silently matches NOTHING (tree-sitter keys node types per grammar),
+// which would drop every C++ scope capture (and thus every CALLS edge) for CUDA
+// files. We therefore mirror the worker's grammar selection exactly.
+let CUDA: unknown = null;
+try {
+  CUDA = createRequire(import.meta.url)('tree-sitter-cuda');
+} catch {
+  CUDA = null;
+}
+
+/** True when `.cu`/`.cuh` should use the CUDA grammar (installed) for parsing + queries. */
+const useCudaGrammar = (filePath?: string): boolean =>
+  CUDA !== null && filePath !== undefined && isCudaFilename(filePath);
 
 const CPP_SCOPE_QUERY = `
 ;; ─── Scopes ──────────────────────────────────────────────────────────
@@ -580,10 +601,26 @@ const CPP_SCOPE_QUERY = `
     field: (field_identifier) @reference.name)) @reference.write
 `;
 
+// One cached parser + query per grammar. The CUDA grammar is a superset of
+// tree-sitter-cpp, so CPP_SCOPE_QUERY compiles and runs against it unchanged.
 let _parser: Parser | null = null;
 let _query: Parser.Query | null = null;
+let _cudaParser: Parser | null = null;
+let _cudaQuery: Parser.Query | null = null;
 
-export function getCppParser(): Parser {
+/**
+ * Parser for the C++ scope-resolution path. Pass the file path so `.cu`/`.cuh`
+ * files are parsed with the CUDA grammar (when installed), matching the grammar
+ * the main parse phase used — see the module-level comment on grammar parity.
+ */
+export function getCppParser(filePath?: string): Parser {
+  if (useCudaGrammar(filePath)) {
+    if (_cudaParser === null) {
+      _cudaParser = new Parser();
+      _cudaParser.setLanguage(CUDA as Parameters<Parser['setLanguage']>[0]);
+    }
+    return _cudaParser;
+  }
   if (_parser === null) {
     _parser = new Parser();
     _parser.setLanguage(CPP as Parameters<Parser['setLanguage']>[0]);
@@ -591,7 +628,19 @@ export function getCppParser(): Parser {
   return _parser;
 }
 
-export function getCppScopeQuery(): Parser.Query {
+/**
+ * Compiled scope query for the C++ scope-resolution path. Pass the file path so
+ * the query is compiled against the same grammar (`.cu`/`.cuh` → CUDA when
+ * installed) as the tree it will run against; a cross-grammar query silently
+ * matches nothing.
+ */
+export function getCppScopeQuery(filePath?: string): Parser.Query {
+  if (useCudaGrammar(filePath)) {
+    if (_cudaQuery === null) {
+      _cudaQuery = new Parser.Query(CUDA as Parameters<Parser['setLanguage']>[0], CPP_SCOPE_QUERY);
+    }
+    return _cudaQuery;
+  }
   if (_query === null) {
     _query = new Parser.Query(CPP as Parameters<Parser['setLanguage']>[0], CPP_SCOPE_QUERY);
   }

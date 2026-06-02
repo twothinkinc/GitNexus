@@ -27,12 +27,14 @@ export function emitCppScopeCaptures(
 ): readonly CaptureMatch[] {
   let tree = cachedTree as ReturnType<ReturnType<typeof getCppParser>['parse']> | undefined;
   if (tree === undefined) {
-    tree = parseSourceSafe(getCppParser(), sourceText, undefined, {
+    tree = parseSourceSafe(getCppParser(filePath), sourceText, undefined, {
       bufferSize: getTreeSitterBufferSize(sourceText),
     });
   }
 
-  const rawMatches = getCppScopeQuery().matches(tree.rootNode);
+  // Compile the query against the same grammar as the tree (CUDA for .cu/.cuh
+  // when installed). A cross-grammar query matches nothing — see query.ts.
+  const rawMatches = getCppScopeQuery(filePath).matches(tree.rootNode);
   const out: CaptureMatch[] = [];
 
   // Track ranges where typedef-struct/enum was captured as its concrete type

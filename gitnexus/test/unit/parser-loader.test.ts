@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
+import {
+  loadParser,
+  loadLanguage,
+  resolveLanguageKey,
+  isLanguageAvailable,
+  getLanguageGrammar,
+} from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
 describe('parser-loader', () => {
@@ -152,6 +158,86 @@ int main(void) {
       };
       descend();
       expect(visited).toBeGreaterThan(20);
+    });
+  });
+
+  // CUDA (.cu/.cuh) is a C++ variant routed to the tree-sitter-cuda grammar
+  // (an optionalDependency on the ABI-safe 0.20.x line) with a tree-sitter-cpp
+  // fallback. These tests prove the grammar is actually selected and exercised
+  // for `.cu`/`.cuh` paths — not merely that a module loads.
+  describe('CUDA grammar routing (.cu/.cuh)', () => {
+    const CUDA_KEY = `${SupportedLanguages.CPlusPlus}:cuda`;
+
+    it('routes .cu and .cuh paths to the cuda grammar key (case-insensitive)', () => {
+      expect(resolveLanguageKey(SupportedLanguages.CPlusPlus, 'src/force.cu')).toBe(CUDA_KEY);
+      expect(resolveLanguageKey(SupportedLanguages.CPlusPlus, 'src/nep.cuh')).toBe(CUDA_KEY);
+      // Case-insensitive — matches getLanguageFromFilename so KERNEL.CU does
+      // not silently fall through to the plain C++ grammar.
+      expect(resolveLanguageKey(SupportedLanguages.CPlusPlus, 'KERNEL.CU')).toBe(CUDA_KEY);
+      // Plain C++ files still resolve to the bare C++ key.
+      expect(resolveLanguageKey(SupportedLanguages.CPlusPlus, 'main.cpp')).toBe(
+        SupportedLanguages.CPlusPlus,
+      );
+    });
+
+    it('reports .cu/.cuh as available (cuda grammar present, or C++ fallback)', () => {
+      expect(isLanguageAvailable(SupportedLanguages.CPlusPlus, 'kernel.cu')).toBe(true);
+      expect(isLanguageAvailable(SupportedLanguages.CPlusPlus, 'kernel.cuh')).toBe(true);
+    });
+
+    it('returns a grammar for .cu that parses CUDA-specific kernel-launch syntax', async () => {
+      const Parser = (await import('tree-sitter')).default;
+      const parser = new Parser();
+      // getLanguageGrammar applies the same routing the worker/pipeline use.
+      parser.setLanguage(getLanguageGrammar(SupportedLanguages.CPlusPlus, 'vecadd.cu') as never);
+
+      const CUDA_SOURCE = `__global__ void addKernel(const float* a, float* out, int n) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) out[i] = a[i];
+}
+void launch(const float* a, float* out, int n) {
+  addKernel<<<(n + 255) / 256, 256>>>(a, out, n);
+}
+`;
+      const tree = parser.parse(CUDA_SOURCE);
+      expect(tree.rootNode.type).toBe('translation_unit');
+
+      // Walk the tree and confirm CUDA kernel-launch syntax is parsed as a
+      // first-class node rather than an ERROR (which is what tree-sitter-cpp
+      // produces for `<<<...>>>`). This is the load-bearing assertion that the
+      // cuda grammar — not the cpp fallback — is in effect when installed.
+      let sawKernelCall = false;
+      let sawError = false;
+      const walk = (node: { type: string; namedChildren: any[] }): void => {
+        if (node.type === 'cuda_kernel_call' || node.type.includes('kernel')) sawKernelCall = true;
+        if (node.type === 'ERROR') sawError = true;
+        for (const child of node.namedChildren) walk(child);
+      };
+      walk(tree.rootNode as never);
+      expect(sawError).toBe(false);
+      expect(sawKernelCall).toBe(true);
+
+      // And the C++ provider's queries must compile + run against the cuda
+      // grammar (it is a tree-sitter-cpp superset), extracting the kernel
+      // function by name.
+      const query = new (Parser as any).Query(
+        parser.getLanguage(),
+        '(function_definition declarator: (function_declarator declarator: (identifier) @name))',
+      );
+      const names = query
+        .captures(tree.rootNode)
+        .filter((c: any) => c.name === 'name')
+        .map((c: any) => c.node.text);
+      expect(names).toEqual(expect.arrayContaining(['addKernel', 'launch']));
+    });
+
+    it('loadLanguage resolves for .cu/.cuh without throwing', async () => {
+      await expect(
+        loadLanguage(SupportedLanguages.CPlusPlus, 'src/force.cu'),
+      ).resolves.not.toThrow();
+      await expect(
+        loadLanguage(SupportedLanguages.CPlusPlus, 'src/nep.cuh'),
+      ).resolves.not.toThrow();
     });
   });
 

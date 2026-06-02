@@ -37,6 +37,10 @@ export const EXTENSIONS = [
   '.cxx',
   '.hxx',
   '.hh',
+  // CUDA (.cu translation units, .cuh device headers) — detected as C++ so
+  // their definitions must be reachable through C/C++ #include resolution.
+  '.cu',
+  '.cuh',
   // C#
   '.cs',
   // Go

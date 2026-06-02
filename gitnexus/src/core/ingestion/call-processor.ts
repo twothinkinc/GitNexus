@@ -36,7 +36,7 @@ import type { TieredCandidates } from './model/resolution-context.js';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
-import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
+import { getLanguageFromFilename, grammarVariantKey, SupportedLanguages } from 'gitnexus-shared';
 import { isRegistryPrimary } from './registry-primary-flag.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import {
@@ -786,7 +786,7 @@ export const processCalls = async (
    * propagation phase) should pass a long-lived map here to avoid O(N)
    * query recompilation overhead.
    */
-  compiledQueryCache?: Map<SupportedLanguages, Parser.Query>,
+  compiledQueryCache?: Map<string, Parser.Query>,
 ): Promise<ExtractedHeritage[]> => {
   const parser = await loadParser();
   const collectedHeritage: ExtractedHeritage[] = [];
@@ -864,10 +864,18 @@ export const processCalls = async (
     let matches;
     try {
       const lang = parser.getLanguage();
-      let query = compiledQueryCache?.get(language);
+      // Key the compiled-query cache by the grammar VARIANT, not the language:
+      // `.cpp` and `.cu` share SupportedLanguages.CPlusPlus but use different
+      // grammar instances, and a query compiled against one grammar silently
+      // matches nothing against the other's tree. The variant key keeps
+      // cpp/cuda (and ts/tsx) entries distinct while still letting same-grammar
+      // providers (e.g. Vue, which reuses the TS grammar) keep separate query
+      // strings under their own language key.
+      const variantKey = grammarVariantKey(language, file.path);
+      let query = compiledQueryCache?.get(variantKey);
       if (!query) {
         query = new Parser.Query(lang, queryStr);
-        compiledQueryCache?.set(language, query);
+        compiledQueryCache?.set(variantKey, query);
       }
       matches = query.matches(tree.rootNode);
     } catch (queryError) {

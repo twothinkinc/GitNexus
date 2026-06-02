@@ -409,7 +409,10 @@ export const cProvider = defineLanguage({
 
 export const cppProvider = defineLanguage({
   id: SupportedLanguages.CPlusPlus,
-  extensions: ['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh'],
+  // `.cu`/`.cuh` (CUDA) route through the C++ provider — same queries,
+  // extractors, and entry-point heuristics. Grammar selection (tree-sitter-cuda
+  // vs tree-sitter-cpp) happens in parser-loader.ts / parse-worker.ts.
+  extensions: ['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh', '.cu', '.cuh'],
   entryPointPatterns: [
     /^main$/,
     /^init_/,

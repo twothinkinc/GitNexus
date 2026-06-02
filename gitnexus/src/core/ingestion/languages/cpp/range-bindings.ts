@@ -25,11 +25,15 @@ export function populateCppRangeBindings(
     readonly treeCache?: { get(filePath: string): unknown };
   },
 ): void {
-  const parser = getCppParser();
-
   for (const parsed of parsedFiles) {
     const sourceText = ctx.fileContents.get(parsed.filePath);
     if (sourceText === undefined) continue;
+
+    // Select the parser matching the file's grammar (`.cu`/`.cuh` → CUDA when
+    // installed). Cheap — getCppParser caches one parser per grammar — and
+    // keeps a from-scratch parse (cache miss) consistent with the grammar the
+    // main parse phase used for this file.
+    const parser = getCppParser(parsed.filePath);
 
     const cachedTree = ctx.treeCache?.get(parsed.filePath) as
       | ReturnType<typeof parser.parse>

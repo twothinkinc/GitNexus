@@ -1,6 +1,11 @@
 import Parser from 'tree-sitter';
 import { createRequire } from 'node:module';
-import { SupportedLanguages } from 'gitnexus-shared';
+import {
+  SupportedLanguages,
+  grammarVariantKey,
+  GRAMMAR_VARIANT_TSX,
+  GRAMMAR_VARIANT_CUDA,
+} from 'gitnexus-shared';
 
 import { logger } from '../logger.js';
 const _require = createRequire(import.meta.url);
@@ -39,6 +44,15 @@ interface GrammarSource {
   unavailableNote: string;
   optional?: boolean;
   severity?: 'warn' | 'error';
+  /**
+   * When this (optional) grammar can't be loaded, transparently parse with
+   * the grammar registered under `fallbackKey` instead of treating the file
+   * as unsupported. Used by the CUDA variant: `.cu`/`.cuh` files degrade to
+   * `tree-sitter-cpp` (a required dependency, always present) rather than
+   * being dropped. The fallback grammar's own load/cache/log rules still
+   * apply, so a fallback that is itself broken surfaces its own diagnostic.
+   */
+  fallbackKey?: string;
 }
 
 const ISSUES_URL = 'https://github.com/abhigyanpatwari/GitNexus/issues';
@@ -56,7 +70,7 @@ const SOURCES: Record<string, GrammarSource> = {
       'TypeScript parsing requires `tree-sitter-typescript`. ' +
       'Check that the package and its native binding installed cleanly (`npm ci`).',
   },
-  [`${SupportedLanguages.TypeScript}:tsx`]: {
+  [`${SupportedLanguages.TypeScript}:${GRAMMAR_VARIANT_TSX}`]: {
     load: () => _require('tree-sitter-typescript').tsx,
     unavailableNote:
       'TSX parsing requires `tree-sitter-typescript` (re-uses the same native binding as TS).',
@@ -85,6 +99,30 @@ const SOURCES: Record<string, GrammarSource> = {
     load: () => _require('tree-sitter-cpp'),
     unavailableNote:
       'C++ parsing requires `tree-sitter-cpp`. Check the install and native binding.',
+  },
+
+  // CUDA variant of C++. `.cu`/`.cuh` files route here (see resolveLanguageKey).
+  // tree-sitter-cuda is a superset of tree-sitter-cpp that additionally parses
+  // CUDA-specific syntax (`<<<grid, block>>>` kernel launches, `__global__` /
+  // `__device__` / `__shared__` qualifiers), so the C++ provider's queries
+  // compile and run against it unchanged.
+  //
+  // It is an optionalDependency pinned to the ABI-safe 0.20.x line (peer
+  // tree-sitter ^0.21.0, no transitive tree-sitter-c/cpp). When it is absent
+  // or its native binding fails to build, `fallbackKey` transparently routes
+  // `.cu`/`.cuh` parsing to tree-sitter-cpp — so CUDA files are always parsed
+  // (as C++), never dropped. The note below states that real behavior; do not
+  // change it to claim "unparsed File nodes".
+  [`${SupportedLanguages.CPlusPlus}:${GRAMMAR_VARIANT_CUDA}`]: {
+    load: () => _require('tree-sitter-cuda'),
+    optional: true,
+    fallbackKey: SupportedLanguages.CPlusPlus,
+    unavailableNote:
+      'CUDA grammar `tree-sitter-cuda` (optionalDependency) is unavailable; ' +
+      '`.cu`/`.cuh` files fall back to `tree-sitter-cpp` and are still parsed ' +
+      'as C++ (CUDA-specific syntax such as `<<<...>>>` kernel launches may not ' +
+      'be recognized). Install build tools (python3/make/g++) and reinstall, or ' +
+      'run with the CUDA grammar present, to enable full CUDA parsing.',
   },
   [SupportedLanguages.Go]: {
     load: () => _require('tree-sitter-go'),
@@ -205,10 +243,14 @@ const logFailure = (key: string, result: LoadResult): void => {
   }
 };
 
-export const resolveLanguageKey = (language: SupportedLanguages, filePath?: string): string =>
-  language === SupportedLanguages.TypeScript && filePath?.endsWith('.tsx')
-    ? `${language}:tsx`
-    : language;
+/**
+ * Grammar-table key for a (language, filePath). Alias of the shared
+ * `grammarVariantKey` (single source of truth shared with the parse worker and
+ * the C++ scope-resolution query) — kept under this name because it is the
+ * loader's long-standing public export. Routes `.tsx` → `:tsx` and
+ * `.cu`/`.cuh` → `:cuda`, case-insensitively.
+ */
+export const resolveLanguageKey = grammarVariantKey;
 
 const loadGrammar = (key: string): LoadResult => {
   const cached = loadCache.get(key);
@@ -245,13 +287,29 @@ const loadGrammar = (key: string): LoadResult => {
   return result;
 };
 
-export const isLanguageAvailable = (language: SupportedLanguages, filePath?: string): boolean =>
-  loadGrammar(resolveLanguageKey(language, filePath)).ok;
+export const isLanguageAvailable = (language: SupportedLanguages, filePath?: string): boolean => {
+  const key = resolveLanguageKey(language, filePath);
+  if (loadGrammar(key).ok) return true;
+  // A grammar with a fallback (CUDA → C++) is "available" as long as its
+  // fallback loads: the file will still be parsed, just with the fallback
+  // grammar. Reporting false here would wrongly mark `.cu`/`.cuh` files as
+  // skippable when tree-sitter-cuda is merely absent.
+  const fallbackKey = SOURCES[key]?.fallbackKey;
+  return fallbackKey !== undefined ? loadGrammar(fallbackKey).ok : false;
+};
 
 export const getLanguageGrammar = (language: SupportedLanguages, filePath?: string): unknown => {
   const key = resolveLanguageKey(language, filePath);
   const result = loadGrammar(key);
   if (result.ok === true) return result.grammar;
+  // Optional grammar with a declared fallback (CUDA → C++): the unavailable
+  // note has already been logged once by loadGrammar; return the fallback
+  // grammar so the file is parsed rather than dropped.
+  const fallbackKey = SOURCES[key]?.fallbackKey;
+  if (fallbackKey !== undefined) {
+    const fallback = loadGrammar(fallbackKey);
+    if (fallback.ok === true) return fallback.grammar;
+  }
   // Fatal failures throw the original underlying error (preserving stack)
   // after the note has been logged. Optional failures fall through to the
   // standard "Unsupported language" message that callers already handle.

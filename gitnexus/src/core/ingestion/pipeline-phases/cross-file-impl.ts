@@ -16,11 +16,7 @@ import {
 } from '../call-processor.js';
 import type { createResolutionContext } from '../model/resolution-context.js';
 import { createASTCache } from '../ast-cache.js';
-import {
-  type PipelineProgress,
-  getLanguageFromFilename,
-  type SupportedLanguages,
-} from 'gitnexus-shared';
+import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
 import { isRegistryPrimary } from '../registry-primary-flag.js';
@@ -120,10 +116,13 @@ export async function runCrossFileBindingPropagation(
   let crossFileResolved = 0;
   const crossFileStart = Date.now();
   const astCache = createASTCache(AST_CACHE_CAP);
-  // Compiled query objects keyed by language name. Shared across all processCalls
-  // invocations in this phase so the same tree-sitter query string is only
-  // compiled once per language instead of once per file (O(1) vs O(N)).
-  const compiledQueryCache = new Map<SupportedLanguages, Parser.Query>();
+  // Compiled query objects keyed by grammar variant (e.g. `cpp`, `cpp:cuda`,
+  // `typescript`, `typescript:tsx`). Shared across all processCalls invocations
+  // in this phase so each query string is compiled once per grammar instead of
+  // once per file (O(1) vs O(N)). Keyed by variant — not bare language — so a
+  // mixed `.cpp`/`.cu` (or `.ts`/`.tsx`) batch never reuses one grammar's query
+  // against another grammar's tree (which would silently match nothing).
+  const compiledQueryCache = new Map<string, Parser.Query>();
 
   // Snapshot total topological candidates for progress math.  We walk the
   // levels once more here (fast — no I/O) so we can report meaningful

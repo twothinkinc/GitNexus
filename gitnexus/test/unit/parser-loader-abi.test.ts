@@ -72,6 +72,16 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
     snippet: 'int main() { return 0; }\n',
     rootType: 'translation_unit',
   },
+  // CUDA variant: routes to tree-sitter-cuda for `.cu`/`.cuh`. Snippet avoids
+  // `<<<...>>>` so it also parses cleanly under the tree-sitter-cpp fallback
+  // (getLanguageGrammar returns the cpp grammar when tree-sitter-cuda is
+  // absent), keeping the rootType assertion valid in both cases.
+  [`${SupportedLanguages.CPlusPlus}:cuda`]: {
+    language: SupportedLanguages.CPlusPlus,
+    filePath: 'kernel.cu',
+    snippet: '__global__ void k(float* p) { p[0] = 0.0f; }\n',
+    rootType: 'translation_unit',
+  },
   [SupportedLanguages.Go]: {
     language: SupportedLanguages.Go,
     snippet: 'package main\nfunc main() {}\n',

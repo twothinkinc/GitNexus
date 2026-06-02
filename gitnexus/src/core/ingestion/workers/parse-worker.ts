@@ -55,7 +55,21 @@ let Kotlin: TreeSitterLanguage | null = null;
 try {
   Kotlin = _require('tree-sitter-kotlin');
 } catch {}
-import { getLanguageFromFilename } from 'gitnexus-shared';
+
+// tree-sitter-cuda is an optionalDependency — may not be installed. When
+// present it parses `.cu`/`.cuh` with CUDA-aware node types; when absent those
+// files fall back to the (statically imported, always-present) CPP grammar.
+// See workerLanguageKey / setLanguage below for the fallback wiring.
+let Cuda: TreeSitterLanguage | null = null;
+try {
+  Cuda = _require('tree-sitter-cuda');
+} catch {}
+import {
+  getLanguageFromFilename,
+  grammarVariantKey,
+  GRAMMAR_VARIANT_TSX,
+  GRAMMAR_VARIANT_CUDA,
+} from 'gitnexus-shared';
 import {
   buildConcreteTypedefDefinitionRanges,
   FUNCTION_NODE_TYPES,
@@ -365,14 +379,18 @@ type WorkerIncomingMessage = { type: 'sub-batch'; files: ParseWorkerInput[] } | 
 
 const parser = new Parser();
 
+/** Grammar-table key for the CUDA C++ subset — see `grammarVariantKey`. */
+const CUDA_KEY = `${SupportedLanguages.CPlusPlus}:${GRAMMAR_VARIANT_CUDA}`;
+
 const languageMap: Record<string, TreeSitterLanguage> = {
   [SupportedLanguages.JavaScript]: JavaScript,
   [SupportedLanguages.TypeScript]: TypeScript.typescript,
-  [`${SupportedLanguages.TypeScript}:tsx`]: TypeScript.tsx,
+  [`${SupportedLanguages.TypeScript}:${GRAMMAR_VARIANT_TSX}`]: TypeScript.tsx,
   [SupportedLanguages.Python]: Python,
   [SupportedLanguages.Java]: Java,
   [SupportedLanguages.C]: C,
   [SupportedLanguages.CPlusPlus]: CPP,
+  ...(Cuda ? { [CUDA_KEY]: Cuda } : {}),
   [SupportedLanguages.CSharp]: CSharp,
   [SupportedLanguages.Go]: Go,
   [SupportedLanguages.Rust]: Rust,
@@ -385,25 +403,31 @@ const languageMap: Record<string, TreeSitterLanguage> = {
 };
 
 /**
- * Check if a language grammar is available in this worker.
- * Duplicated from parser-loader.ts because workers can't import from the main thread.
- * Extra filePath parameter needed to distinguish .tsx from .ts (different grammars
- * under the same SupportedLanguages.TypeScript key).
+ * Resolve the actual grammar to use for a key, applying the CUDA → C++
+ * fallback when tree-sitter-cuda isn't installed. Returns null when no grammar
+ * (or fallback) is available. This is the worker-side equivalent of the
+ * `fallbackKey` mechanism in parser-loader.ts: `.cu`/`.cuh` files are always
+ * parsed (with CPP as the fallback grammar), never silently skipped.
  */
-const isLanguageAvailable = (language: SupportedLanguages, filePath: string): boolean => {
-  const key =
-    language === SupportedLanguages.TypeScript && filePath.endsWith('.tsx')
-      ? `${language}:tsx`
-      : language;
-  return key in languageMap && languageMap[key] != null;
+const grammarForKey = (key: string): TreeSitterLanguage | null => {
+  const lang = languageMap[key];
+  if (lang != null) return lang;
+  if (key === CUDA_KEY) return languageMap[SupportedLanguages.CPlusPlus] ?? null;
+  return null;
 };
 
+/**
+ * Check if a language grammar is available in this worker. Grammar selection
+ * goes through the shared `grammarVariantKey` (so `.tsx`/`.cu`/`.cuh` route to
+ * their variant grammars) plus the worker's CUDA→C++ `grammarForKey` fallback.
+ * The worker keeps its own static grammar table because it cannot import the
+ * main-thread loader, but it shares the *routing* decision with it.
+ */
+const isLanguageAvailable = (language: SupportedLanguages, filePath: string): boolean =>
+  grammarForKey(grammarVariantKey(language, filePath)) != null;
+
 const setLanguage = (language: SupportedLanguages, filePath: string): void => {
-  const key =
-    language === SupportedLanguages.TypeScript && filePath.endsWith('.tsx')
-      ? `${language}:tsx`
-      : language;
-  const lang = languageMap[key];
+  const lang = grammarForKey(grammarVariantKey(language, filePath));
   if (!lang) throw new Error(`Unsupported language: ${language}`);
   parser.setLanguage(lang);
 };
@@ -870,21 +894,23 @@ const processBatch = (
       }
       continue;
     }
-    const tsxFiles: ParseWorkerInput[] = [];
+    // Some languages keep more than one grammar under a single
+    // SupportedLanguages key and must be parsed in separate groups (different
+    // grammar → different setLanguage call): TypeScript splits `.tsx` from
+    // `.ts`, and C++ splits CUDA (`.cu`/`.cuh`) from plain C++. A file belongs
+    // to the secondary-grammar group iff `grammarVariantKey` routes it to a
+    // `<lang>:<variant>` key rather than the bare language. This is
+    // language-agnostic — any future variant grammar partitions automatically.
+    // Manual loop (not spread) — `push(...arr)` blows the stack on very large
+    // arrays when langFiles has tens of thousands of entries.
+    const variantFiles: ParseWorkerInput[] = [];
     const regularFiles: ParseWorkerInput[] = [];
-
-    if (language === SupportedLanguages.TypeScript) {
-      for (const f of langFiles) {
-        if (f.path.endsWith('.tsx')) {
-          tsxFiles.push(f);
-        } else {
-          regularFiles.push(f);
-        }
+    for (const f of langFiles) {
+      if (grammarVariantKey(language, f.path) !== language) {
+        variantFiles.push(f);
+      } else {
+        regularFiles.push(f);
       }
-    } else {
-      // Manual loop (not spread) — `push(...arr)` blows the stack on very
-      // large arrays when langFiles has tens of thousands of entries.
-      for (const f of langFiles) regularFiles.push(f);
     }
 
     // Process regular files for this language
@@ -902,18 +928,21 @@ const processBatch = (
       }
     }
 
-    // Process tsx files separately (different grammar)
-    if (tsxFiles.length > 0) {
-      if (isLanguageAvailable(language, tsxFiles[0].path)) {
+    // Process the variant-grammar files separately (.tsx / .cu / .cuh use a
+    // different grammar than their language's default, so they need their own
+    // setLanguage call). All files in this group share one variant grammar, so
+    // keying setLanguage off the first path is correct.
+    if (variantFiles.length > 0) {
+      if (isLanguageAvailable(language, variantFiles[0].path)) {
         try {
-          setLanguage(language, tsxFiles[0].path);
-          processFileGroup(tsxFiles, language, queryString, result, onFileProcessed);
+          setLanguage(language, variantFiles[0].path);
+          processFileGroup(variantFiles, language, queryString, result, onFileProcessed);
         } catch {
           // parser unavailable — skip this language group
         }
       } else {
         result.skippedLanguages[language] =
-          (result.skippedLanguages[language] || 0) + tsxFiles.length;
+          (result.skippedLanguages[language] || 0) + variantFiles.length;
       }
     }
   }

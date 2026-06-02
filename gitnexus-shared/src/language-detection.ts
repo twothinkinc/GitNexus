@@ -32,7 +32,23 @@ const EXTENSION_MAP: Record<SupportedLanguages, readonly string[]> = {
   [SupportedLanguages.Python]: ['.py'],
   [SupportedLanguages.Java]: ['.java'],
   [SupportedLanguages.C]: ['.c'],
-  [SupportedLanguages.CPlusPlus]: ['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh'],
+  // `.cu`/`.cuh` are CUDA C++ translation units / device headers. They map to
+  // CPlusPlus so the C++ provider, queries, and entry-point heuristics apply.
+  // When `tree-sitter-cuda` (optionalDependency) is installed they are parsed
+  // with the CUDA grammar (CUDA-specific node types like `<<<>>>` kernel
+  // launches); otherwise they fall back to `tree-sitter-cpp`. See
+  // `parser-loader.ts` (`resolveLanguageKey`) and `isCudaFilename` below.
+  [SupportedLanguages.CPlusPlus]: [
+    '.cpp',
+    '.cc',
+    '.cxx',
+    '.h',
+    '.hpp',
+    '.hxx',
+    '.hh',
+    '.cu',
+    '.cuh',
+  ],
   [SupportedLanguages.CSharp]: ['.cs'],
   [SupportedLanguages.Go]: ['.go'],
   [SupportedLanguages.Ruby]: ['.rb', '.rake', '.gemspec'],
@@ -63,6 +79,60 @@ for (const [lang, exts] of Object.entries(EXTENSION_MAP) as [
  */
 export const isBladeTemplateFilename = (filePath: string): boolean =>
   filePath.replace(/\\/g, '/').toLowerCase().endsWith('.blade.php');
+
+/**
+ * CUDA source files (`.cu` device/host translation units, `.cuh` device
+ * headers). These detect as {@link SupportedLanguages.CPlusPlus} but route to
+ * the dedicated `tree-sitter-cuda` grammar variant when it is installed.
+ *
+ * This is the single source of truth for "is this path CUDA?" — both the
+ * main-thread parser-loader (`resolveLanguageKey`) and the parse-worker's
+ * private grammar router call it, so the two paths can never disagree about
+ * routing (notably: the comparison is case-insensitive, matching
+ * `getLanguageFromFilename`, so `kernel.CU` routes identically to `kernel.cu`).
+ */
+export const isCudaFilename = (filePath: string): boolean => {
+  const p = filePath.toLowerCase();
+  return p.endsWith('.cu') || p.endsWith('.cuh');
+};
+
+/**
+ * Grammar-variant suffixes for the two languages that keep more than one
+ * tree-sitter grammar under a single {@link SupportedLanguages} value.
+ */
+export const GRAMMAR_VARIANT_TSX = 'tsx';
+export const GRAMMAR_VARIANT_CUDA = 'cuda';
+
+/**
+ * Resolve a (language, filePath) pair to the grammar-table key used to select a
+ * tree-sitter grammar. Most languages map to their bare `SupportedLanguages`
+ * value; the two that ship a second grammar under one language pick a
+ * `"<lang>:<variant>"` key:
+ *   - TypeScript `.tsx`      → `"<ts>:tsx"`   (tree-sitter-typescript `.tsx`)
+ *   - C++ `.cu` / `.cuh`     → `"<cpp>:cuda"` (tree-sitter-cuda)
+ *
+ * This is the single source of truth for that decision, shared by the
+ * main-thread parser loader (`parser-loader.ts`), the parse worker's private
+ * grammar table, and the C++ scope-resolution query — so they can never drift
+ * on routing. It is a pure function with no native dependencies, which is what
+ * lets the worker import it (the worker cannot import the loader, whose grammar
+ * table eagerly resolves native bindings).
+ *
+ * Matching is case-insensitive for both variants, consistent with
+ * {@link getLanguageFromFilename} (which lowercases extensions) — so `Kernel.CU`
+ * and `Component.TSX` route to their variant grammars rather than silently
+ * falling through to the base grammar.
+ */
+export const grammarVariantKey = (language: SupportedLanguages, filePath?: string): string => {
+  const lower = filePath?.toLowerCase();
+  if (language === SupportedLanguages.TypeScript && lower?.endsWith('.tsx')) {
+    return `${language}:${GRAMMAR_VARIANT_TSX}`;
+  }
+  if (language === SupportedLanguages.CPlusPlus && lower && isCudaFilename(lower)) {
+    return `${language}:${GRAMMAR_VARIANT_CUDA}`;
+  }
+  return language;
+};
 
 /**
  * Map file extension to SupportedLanguage enum.
