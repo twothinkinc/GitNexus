@@ -8,6 +8,62 @@ change, `.cu` and `.cuh` files were classified as unsupported and ingested as
 empty `File` nodes (zero symbols), which blinded code intelligence for GPU
 projects whose kernel/device logic lives in `.cu`/`.cuh`.
 
+## Quick start (developers)
+
+Copy-paste setup for the CLI + MCP (the browser UI is **not** needed and is
+skipped). macOS/Linux:
+
+```bash
+# 1. Node >= 22 is a HARD requirement (Node 20 fails the build)
+nvm install 22 && nvm use 22 && nvm alias default 22   # or any Node >= 22
+node -v
+
+# 2. Clone the fork
+git clone https://github.com/twothinkinc/GitNexus.git
+cd GitNexus
+
+# 3. Build the shared package, then the CLI.
+#    GITNEXUS_SKIP_WEB=1 skips the browser-UI build (Vite/rolldown) that CLI/MCP
+#    users don't need. EXPORT it — `npm install`/`npm link`/`npm ci` all run the
+#    build via the `prepare` script, and it fails on the web build without this.
+cd gitnexus-shared && npm install && npm run build && cd ../gitnexus
+export GITNEXUS_SKIP_WEB=1
+npm install
+
+# 4. Put `gitnexus` on your PATH. The build already produced an executable
+#    dist/cli/index.js (with a shebang), so a symlink is the most reliable way:
+ln -sf "$PWD/dist/cli/index.js" /opt/homebrew/bin/gitnexus   # macOS (Homebrew)
+#   Linux: ln -sf "$PWD/dist/cli/index.js" ~/.local/bin/gitnexus   (dir must be on $PATH)
+#   Alternative: `npm link`  (works only while GITNEXUS_SKIP_WEB=1 is exported)
+gitnexus --version          # -> 1.6.5
+
+# 5. Configure your editor's MCP (Cursor / Claude Code / Codex), then RESTART it
+gitnexus setup
+
+# 6. Index a repo — CUDA .cu/.cuh fully supported
+cd /path/to/your/repo && gitnexus analyze
+```
+
+**If `npm install` / `npm link` errors with `@rolldown/binding-…` or a Vite
+message:** you didn't `export GITNEXUS_SKIP_WEB=1` — that error is the browser UI
+(`gitnexus-web`), which the CLI/MCP doesn't use. Set the flag and re-run.
+
+**MCP config (manual, instead of `gitnexus setup`)** — editors spawn the command
+directly, so point them at the linked `gitnexus` or the absolute path:
+
+```json
+{ "mcpServers": { "gitnexus": { "command": "node",
+  "args": ["/ABS/PATH/TO/GitNexus/gitnexus/dist/cli/index.js", "mcp"] } } }
+```
+
+> One MCP server serves **all** repos you've `analyze`d — index more anytime and
+> they appear automatically. Re-run `gitnexus analyze` to refresh a stale index.
+
+The sections below cover the same steps in more depth, plus verification and the
+implementation notes.
+
+---
+
 ## What works now
 
 `.cu` (translation units) and `.cuh` (device headers) are detected as C++ and
@@ -70,18 +126,25 @@ cd GitNexus
 # Build the shared package first (it is a file: dependency of the CLI).
 cd gitnexus-shared && npm install && npm run build && cd ..
 
-# Install + build the CLI. GITNEXUS_SKIP_WEB=1 skips the browser UI build
-# (Vite/rolldown) that CLI/MCP users don't need — without it, `npm install`
-# fails on the web build unless you also set up gitnexus-web. This pulls
-# tree-sitter-cuda@0.20.6 (optional, prebuilt) and builds dist/.
-cd gitnexus && GITNEXUS_SKIP_WEB=1 npm install
+# Skip the browser UI build (Vite/rolldown) that CLI/MCP users don't need.
+# IMPORTANT: this flag must be set for EVERY npm lifecycle that runs the build —
+# `npm install`, `npm link`, and `npm ci` all run the `prepare` script. The
+# simplest way is to export it once for the whole setup session:
+cd gitnexus
+export GITNEXUS_SKIP_WEB=1
 
-# Make `gitnexus` available on your PATH (uses this local build).
+# Install + build the CLI (pulls tree-sitter-cuda@0.20.6, prebuilt) and link it.
+npm install
 npm link
 gitnexus --version
 ```
 
-> Only building the browser UI? Drop `GITNEXUS_SKIP_WEB=1` (and ensure Node
+> Why `export`? `npm link` (and `npm ci`) re-run `prepare` → the build. Without
+> `GITNEXUS_SKIP_WEB=1` in the environment they fail on the web-UI build. If you
+> didn't export it, prefix each command (`GITNEXUS_SKIP_WEB=1 npm link`) or, since
+> `dist/` is already built, just `npm link --ignore-scripts`.
+>
+> Only building the browser UI? Leave `GITNEXUS_SKIP_WEB` unset (and ensure Node
 > ≥ 22.12 + `gitnexus-web` deps). It is not needed for indexing or MCP.
 
 If npm's optional-dependency resolution misbehaves (a known npm bug on some
