@@ -107,23 +107,33 @@ const cliEntry = path.join(DIST, 'cli', 'index.js');
 if (fs.existsSync(cliEntry)) fs.chmodSync(cliEntry, 0o755);
 
 // ── 6. Build & copy web UI ──────────────────────────────────────────
-const WEB_ROOT = path.resolve(ROOT, '..', 'gitnexus-web');
-const WEB_DEST = path.join(DIST, '..', 'web');
-
-if (fs.existsSync(path.join(WEB_ROOT, 'package.json'))) {
-  console.log('[build] building gitnexus-web…');
-  if (!fs.existsSync(path.join(WEB_ROOT, 'node_modules'))) {
-    console.log('[build] installing gitnexus-web dependencies…');
-    execSync('npm ci', { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
-  }
-  execSync('npm run build', { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
-
-  // Copy dist → gitnexus/web/ (shipped in the npm package)
-  fs.rmSync(WEB_DEST, { recursive: true, force: true });
-  fs.cpSync(path.join(WEB_ROOT, 'dist'), WEB_DEST, { recursive: true });
-  console.log('[build] copied web UI → gitnexus/web/');
+// The web UI is optional for CLI/MCP-only installs. Set GITNEXUS_SKIP_WEB=1
+// (strict '1', mirroring GITNEXUS_SKIP_OPTIONAL_GRAMMARS) to skip it — this lets
+// developers who only need the CLI and MCP server run `npm install` without the
+// gitnexus-web toolchain (Vite/rolldown native bindings, Node 20.19+/22.12+).
+// Release builds (npm publish / prepack / Docker) leave it unset so the bundled
+// UI is built and shipped in gitnexus/web/.
+if (process.env.GITNEXUS_SKIP_WEB === '1') {
+  console.log('[build] skipping web UI (GITNEXUS_SKIP_WEB=1)');
 } else {
-  console.log('[build] skipping web UI (gitnexus-web not found)');
+  const WEB_ROOT = path.resolve(ROOT, '..', 'gitnexus-web');
+  const WEB_DEST = path.join(DIST, '..', 'web');
+
+  if (fs.existsSync(path.join(WEB_ROOT, 'package.json'))) {
+    console.log('[build] building gitnexus-web…');
+    if (!fs.existsSync(path.join(WEB_ROOT, 'node_modules'))) {
+      console.log('[build] installing gitnexus-web dependencies…');
+      execSync('npm ci', { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
+    }
+    execSync('npm run build', { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
+
+    // Copy dist → gitnexus/web/ (shipped in the npm package)
+    fs.rmSync(WEB_DEST, { recursive: true, force: true });
+    fs.cpSync(path.join(WEB_ROOT, 'dist'), WEB_DEST, { recursive: true });
+    console.log('[build] copied web UI → gitnexus/web/');
+  } else {
+    console.log('[build] skipping web UI (gitnexus-web not found)');
+  }
 }
 
 console.log(`[build] done — rewrote ${rewritten} files.`);

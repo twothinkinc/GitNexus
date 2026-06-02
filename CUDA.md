@@ -54,33 +54,44 @@ tracked in `.github/scripts/check-tree-sitter-upgrade-readiness.py`.
 
 ## For engineers: install the fork, index, run the MCP
 
-> Requirements: **Node ≥ 22**, plus a C/C++ toolchain (`python3`, `make`, `g++`)
-> for any native grammar that needs to compile from source. `tree-sitter-cuda`
-> ships prebuilt binaries for Linux x64, macOS x64/arm64, and Windows x64
-> (Node 18/20/22), so most engineers will not need to compile it.
+> Requirements: **Node ≥ 22** (hard requirement — the CLI's `engines` and the
+> web toolchain both need it; Node 20 fails the build). Check with `node -v`,
+> and if you use nvm: `nvm install 22 && nvm use 22 && nvm alias default 22`.
+> A C/C++ toolchain (`python3`, `make`, `g++`) is only needed for grammars that
+> compile from source — `tree-sitter-cuda` ships prebuilt binaries for Linux
+> x64, macOS x64/arm64, and Windows x64, so most engineers won't need it.
 
-### 1. Clone the fork and install
+### 1. Clone the fork and install (CLI + MCP only)
 
 ```bash
-git clone <your-fork-url> GitNexus
+git clone https://github.com/twothinkinc/GitNexus.git
 cd GitNexus
 
 # Build the shared package first (it is a file: dependency of the CLI).
 cd gitnexus-shared && npm install && npm run build && cd ..
 
-# Install + build the CLI. This pulls tree-sitter-cuda@0.20.6 (optional,
-# prebuilt) and runs the build (tsc) + native grammar postinstall steps.
-cd gitnexus && npm install
+# Install + build the CLI. GITNEXUS_SKIP_WEB=1 skips the browser UI build
+# (Vite/rolldown) that CLI/MCP users don't need — without it, `npm install`
+# fails on the web build unless you also set up gitnexus-web. This pulls
+# tree-sitter-cuda@0.20.6 (optional, prebuilt) and builds dist/.
+cd gitnexus && GITNEXUS_SKIP_WEB=1 npm install
+
+# Make `gitnexus` available on your PATH (uses this local build).
+npm link
+gitnexus --version
 ```
+
+> Only building the browser UI? Drop `GITNEXUS_SKIP_WEB=1` (and ensure Node
+> ≥ 22.12 + `gitnexus-web` deps). It is not needed for indexing or MCP.
 
 If npm's optional-dependency resolution misbehaves (a known npm bug on some
 platforms — see [npm/cli#4828](https://github.com/npm/cli/issues/4828)) and the
 CUDA grammar (or any platform binding) is skipped, reinstall cleanly:
 
 ```bash
-rm -rf node_modules package-lock.json && npm install
+rm -rf node_modules package-lock.json && GITNEXUS_SKIP_WEB=1 npm install
 # or, if peer resolution is the blocker:
-npm install --legacy-peer-deps
+GITNEXUS_SKIP_WEB=1 npm install --legacy-peer-deps
 ```
 
 Verify the grammar installed and its ABI is in range:
