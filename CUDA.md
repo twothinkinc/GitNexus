@@ -115,6 +115,64 @@ implementation notes.
 
 ---
 
+## npx vs. global install vs. publishing a one-liner
+
+How the npm commands resolve (this is why a fork can't reuse the name `gitnexus`):
+
+- **`npm install -g gitnexus`** installs the **upstream** package as a persistent
+  `gitnexus` command. It is the only package named `gitnexus` on npm — **no CUDA**.
+- **`npx gitnexus@latest`** (any version/tag) **always fetches that version from the
+  registry**, ignoring anything you have installed. Always upstream — **no CUDA**.
+- **`npx` and `npm -g` are independent.** Installing the fork globally as `gitnexus`
+  would *not* change what `npx gitnexus@latest` runs, so you'd have two commands with
+  the same name running different code. There is **no way** to point either at the
+  fork under the name `gitnexus`.
+
+**To get one clean tool (recommended): publish the fork under a distinct name.**
+Then everyone uses `npx gitnexus-cuda@latest` / `npm i -g gitnexus-cuda`, which
+coexists with (or replaces) upstream with zero ambiguity, and `--version` finally
+distinguishes them.
+
+> ⚠️ **License gate.** Upstream is **PolyForm Noncommercial**. Commercial use and
+> public redistribution of a derivative likely require a commercial license from
+> akonlabs (`founders@akonlabs.com`). Clear this **before** publishing publicly.
+> For internal-only distribution, prefer a **private GitHub Packages** scope
+> (`@twothinkinc/gitnexus`) over public npm.
+
+**Publish recipe** (once licensing is sorted) — turns this fork into
+`npx gitnexus-cuda@latest`:
+
+```bash
+# In gitnexus/package.json:
+#   "name": "gitnexus-cuda"            (or "@twothinkinc/gitnexus" for a private scope)
+#   "bin":  { "gitnexus-cuda": "dist/cli/index.js" }
+#   "version": "1.6.5-cuda.1"          (distinct from upstream so --version differs)
+# In gitnexus/src/cli/setup.ts: change the `which gitnexus` lookup and the
+#   NPX_REF fallback (`gitnexus@<ver>`) to `gitnexus-cuda` (the MCP server *key*
+#   stays "gitnexus" so editor skills keep working).
+
+cd gitnexus
+GITNEXUS_SKIP_WEB=1 npm install        # build dist/
+npm login                              # (or configure the private registry)
+npm publish --tag latest               # prerelease versions need an explicit --tag
+```
+
+After that, devs do **one** thing — and you tell them to drop upstream:
+
+```bash
+npm rm -g gitnexus 2>/dev/null || true     # remove upstream if present
+npm i -g gitnexus-cuda                      # the one tool
+gitnexus-cuda setup                         # configures MCP at the gitnexus-cuda binary
+```
+
+I left the rename/publish out of the committed fork on purpose (it's a one-way,
+license-gated step). Ask and I'll apply the rename + version bump + `setup.ts`
+patch and hand you the exact `npm publish` (public `gitnexus-cuda`) or GitHub
+Packages (`@twothinkinc/gitnexus`) command — or add a **Docker image** so
+non-JS devs need no Node at all.
+
+---
+
 ## What works now
 
 `.cu` (translation units) and `.cuh` (device headers) are detected as C++ and
